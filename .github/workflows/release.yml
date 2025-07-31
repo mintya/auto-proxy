@@ -72,9 +72,6 @@ jobs:
       run: |
         echo "🔨 Building for ${{ matrix.platform }}-${{ matrix.arch }}..."
     
-        # 设置并行编译
-        export CARGO_BUILD_JOBS=$(nproc)
-    
         if [ "${{ matrix.use_cross }}" = "true" ]; then
           cross build --release --target ${{ matrix.target }} --locked
         else
