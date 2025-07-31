@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::convert::Infallible;
 use hyper::{Body, Client, Request, Response};
-use hyper_tls::HttpsConnector;
+use hyper_rustls::HttpsConnectorBuilder;
 use http::header::{HeaderValue, AUTHORIZATION, HOST};
 use tokio::time::sleep;
 use colored::*;
@@ -91,7 +91,12 @@ async fn try_provider(
     headers: &hyper::HeaderMap,
     body_bytes: &hyper::body::Bytes,
 ) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>> {
-    let https = HttpsConnector::new();
+    let https = HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .build();
     let client = Client::builder().build::<_, hyper::Body>(https);
     
     // 构建新的URI
