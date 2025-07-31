@@ -3,17 +3,20 @@ name: Release Build
 on:
   push:
     tags:
-      - 'v*.*.*'  # 匹配版本标签，如 v1.0.0
+      - 'v*.*.*'
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
 
 jobs:
   build:
     name: Build for ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false  # 不要因为一个构建失败就停止所有构建
       matrix:
         include:
           # macOS builds
@@ -32,14 +35,14 @@ jobs:
             os: ubuntu-latest
             platform: linux
             arch: x86_64
-            use_cross: true
+            use_cross: false  # 原生构建更快
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             platform: linux
             arch: aarch64
             use_cross: true
-          # Windows build
-          - target: x86_64-pc-windows-gnu
+          # Windows builds
+          - target: x86_64-pc-windows-msvc  # 使用 MSVC 而不是 GNU
             os: windows-latest
             platform: windows
             arch: x86_64
@@ -53,101 +56,174 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: ${{ matrix.target }}
+        components: clippy, rustfmt
 
-    - name: Install dependencies (macOS only)
-      if: matrix.use_cross == 'false' && runner.os == 'macOS'
+    # 使用更高效的缓存策略
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+        cache-on-failure: true
+
+    - name: Install system dependencies (Linux)
+      if: runner.os == 'Linux'
       run: |
-        brew install openssl@3
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libssl-dev
+
+    - name: Install system dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install openssl@3 pkg-config
         echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-        echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
-        echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+        echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
-    - name: Install dependencies (Windows only)
-      if: matrix.platform == 'windows'
+    - name: Setup Windows environment
+      if: runner.os == 'Windows'
       run: |
-        echo "OPENSSL_DIR=C:\\OpenSSL-Win64" >> $env:GITHUB_ENV
-        echo "OPENSSL_LIB_DIR=C:\\OpenSSL-Win64\\lib" >> $env:GITHUB_ENV
-        echo "OPENSSL_INCLUDE_DIR=C:\\OpenSSL-Win64\\include" >> $env:GITHUB_ENV
         echo "OPENSSL_NO_VENDOR=1" >> $env:GITHUB_ENV
       shell: pwsh
 
-    - name: Install cross (Linux only)
-      if: matrix.use_cross == 'true'
-      run: cargo install cross
-
-    - name: Cache cargo registry
-      uses: actions/cache@v3
-      with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-registry-
-
-    - name: Cache cargo index
-      uses: actions/cache@v3
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-index-
-
-    - name: Cache cargo build
-      uses: actions/cache@v3
-      with:
-        path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-build-target-${{ matrix.target }}-
+    - name: Install cross
+      if: matrix.use_cross == true
+      run: |
+        cargo install cross --git https://github.com/cross-rs/cross
+        # 或者使用预编译版本（更快）
+        # curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+        # cargo binstall --no-confirm cross
 
     - name: Build binary
       run: |
         echo "🔨 Building for ${{ matrix.platform }}-${{ matrix.arch }}..."
-        if [[ "${{ matrix.use_cross }}" == "true" ]]; then
-          cross build --release --target ${{ matrix.target }}
+        
+        if [ "${{ matrix.use_cross }}" = "true" ]; then
+          cross build --release --target ${{ matrix.target }} --locked
         else
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} --locked
         fi
+        
         echo "✅ Build completed successfully"
       shell: bash
 
-    - name: Prepare release assets
-      run: |
-        VERSION=${GITHUB_REF#refs/tags/v}
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
+    - name: Run tests (native builds only)
+      if: matrix.use_cross == false
+      run: cargo test --release --target ${{ matrix.target }}
 
+    - name: Strip binary (Unix only)
+      if: runner.os != 'Windows'
+      run: |
+        BINARY_PATH="target/${{ matrix.target }}/release/auto-proxy"
+        if [ -f "$BINARY_PATH" ]; then
+          strip "$BINARY_PATH"
+          echo "✅ Binary stripped"
+        fi
+
+    - name: Prepare release assets
+      id: prepare
+      run: |
+        # 获取版本号
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        else
+          VERSION="dev-$(git rev-parse --short HEAD)"
+        fi
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+        # 创建发布目录
         mkdir -p release
 
+        # 确定二进制文件名
         BINARY_NAME="auto-proxy"
-        [[ "${{ matrix.target }}" == *"windows"* ]] && BINARY_NAME="auto-proxy.exe"
+        if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+          BINARY_NAME="auto-proxy.exe"
+        fi
 
-        cp target/${{ matrix.target }}/release/$BINARY_NAME release/
+        # 复制二进制文件
+        BINARY_PATH="target/${{ matrix.target }}/release/$BINARY_NAME"
+        if [ ! -f "$BINARY_PATH" ]; then
+          echo "❌ Binary not found: $BINARY_PATH"
+          exit 1
+        fi
+        
+        cp "$BINARY_PATH" release/
+        
+        # 添加额外文件
+        if [ -f "README.md" ]; then
+          cp README.md release/
+        fi
+        if [ -f "LICENSE" ]; then
+          cp LICENSE release/
+        fi
 
+        # 创建压缩包
         cd release
-        ARCHIVE_NAME="auto-proxy-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz"
-        tar -czf $ARCHIVE_NAME $BINARY_NAME
-        echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
-        echo "ARCHIVE_PATH=release/$ARCHIVE_NAME" >> $GITHUB_ENV
+        ARCHIVE_NAME="auto-proxy-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}"
+        
+        if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+          # Windows 使用 zip
+          ARCHIVE_FILE="$ARCHIVE_NAME.zip"
+          7z a "$ARCHIVE_FILE" *
+        else
+          # Unix 使用 tar.gz
+          ARCHIVE_FILE="$ARCHIVE_NAME.tar.gz"
+          tar -czf "$ARCHIVE_FILE" *
+        fi
+        
+        echo "ARCHIVE_NAME=$ARCHIVE_FILE" >> $GITHUB_ENV
+        echo "ARCHIVE_PATH=release/$ARCHIVE_FILE" >> $GITHUB_ENV
+        echo "archive_name=$ARCHIVE_FILE" >> $GITHUB_OUTPUT
 
+        # 显示文件信息
         ls -la
-        echo "📦 Created archive: $ARCHIVE_NAME"
+        echo "📦 Created archive: $ARCHIVE_FILE"
+        
+        # 显示文件大小
+        if command -v du >/dev/null 2>&1; then
+          echo "📊 Archive size: $(du -h "$ARCHIVE_FILE" | cut -f1)"
+        fi
       shell: bash
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.ARCHIVE_NAME }}
+        name: ${{ steps.prepare.outputs.archive_name }}
         path: ${{ env.ARCHIVE_PATH }}
-        retention-days: 30
+        retention-days: 7  # 减少存储时间
+        compression-level: 0  # 文件已经压缩过了
+
+  # 添加安全检查作业
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+    
+    - name: Run cargo audit
+      run: |
+        cargo install cargo-audit
+        cargo audit
 
   release:
     name: Create Release
-    needs: build
+    needs: [build, security-audit]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write  # 明确权限
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整历史用于生成变更日志
 
     - name: Download all artifacts
       uses: actions/download-artifact@v4
@@ -156,29 +232,58 @@ jobs:
         merge-multiple: true
 
     - name: Prepare release assets
+      id: prepare
       run: |
         VERSION=${GITHUB_REF#refs/tags/v}
         echo "VERSION=$VERSION" >> $GITHUB_ENV
 
         mkdir -p release-assets
-        find artifacts -name "*.tar.gz" -exec cp {} release-assets/ \;
+        
+        # 移动所有压缩包到发布目录
+        find artifacts -name "*.tar.gz" -o -name "*.zip" | while read file; do
+          cp "$file" release-assets/
+        done
 
         echo "📦 Release assets:"
         ls -la release-assets/
 
+        # 生成校验和
         cd release-assets
-        sha256sum *.tar.gz > SHA256SUMS
-        echo "✅ Generated checksums"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum * > SHA256SUMS
+        elif command -v shasum >/dev/null 2>&1; then
+          shasum -a 256 * > SHA256SUMS
+        fi
+        
+        echo "✅ Generated checksums:"
         cat SHA256SUMS
+
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # 获取上一个标签
+        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        if [ -n "$PREV_TAG" ]; then
+          echo "## 🔄 Changes since $PREV_TAG" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD >> CHANGELOG.md
+        else
+          echo "## 🎉 Initial Release" > CHANGELOG.md
+        fi
+        
+        echo "" >> CHANGELOG.md
 
     - name: Generate release notes
       run: |
-        cat > release-notes.md << 'EOF'
+        cat > release-notes.md << EOF
         # Auto Proxy v${{ env.VERSION }}
 
         ## 🚀 新版本发布
 
         这是 Auto Proxy 的 v${{ env.VERSION }} 版本，一个支持多提供商的智能代理服务器。
+
+        $(cat CHANGELOG.md)
 
         ## ✨ 主要特性
 
@@ -193,47 +298,69 @@ jobs:
         请根据您的操作系统选择对应的版本：
 
         ### macOS
-        - **Intel (x86_64)**: `auto-proxy-${{ env.VERSION }}-macos-x86_64.tar.gz`
-        - **Apple Silicon (aarch64)**: `auto-proxy-${{ env.VERSION }}-macos-aarch64.tar.gz`
+        - **Intel (x86_64)**: \`auto-proxy-${{ env.VERSION }}-macos-x86_64.tar.gz\`
+        - **Apple Silicon (aarch64)**: \`auto-proxy-${{ env.VERSION }}-macos-aarch64.tar.gz\`
 
         ### Linux
-        - **x86_64**: `auto-proxy-${{ env.VERSION }}-linux-x86_64.tar.gz`
-        - **aarch64**: `auto-proxy-${{ env.VERSION }}-linux-aarch64.tar.gz`
+        - **x86_64**: \`auto-proxy-${{ env.VERSION }}-linux-x86_64.tar.gz\`
+        - **aarch64**: \`auto-proxy-${{ env.VERSION }}-linux-aarch64.tar.gz\`
 
         ### Windows
-        - **x86_64**: `auto-proxy-${{ env.VERSION }}-windows-x86_64.tar.gz`
+        - **x86_64**: \`auto-proxy-${{ env.VERSION }}-windows-x86_64.zip\`
 
-        ## 🔧 安装方法
+        ## 🔧 快速安装
 
-        1. 下载对应平台的压缩包
-        2. 解压缩：`tar -xzf auto-proxy-${{ env.VERSION }}-<platform>-<arch>.tar.gz`
-        3. 运行：`./auto-proxy --help` 或 `auto-proxy.exe --help`
+        ### Linux/macOS
+        \`\`\`bash
+        # 下载并解压
+        curl -L -o auto-proxy.tar.gz "https://github.com/\${{ github.repository }}/releases/download/v${{ env.VERSION }}/auto-proxy-${{ env.VERSION }}-\$(uname -s | tr '[:upper:]' '[:lower:]')-\$(uname -m).tar.gz"
+        tar -xzf auto-proxy.tar.gz
+        chmod +x auto-proxy
+        ./auto-proxy --help
+        \`\`\`
+
+        ### Windows
+        下载 zip 文件并解压，然后运行 \`auto-proxy.exe --help\`
 
         ## 📋 校验和
 
-        请使用 `SHA256SUMS` 文件验证下载文件的完整性。
+        请使用 \`SHA256SUMS\` 文件验证下载文件的完整性：
+
+        \`\`\`bash
+        sha256sum -c SHA256SUMS
+        \`\`\`
 
         ## 🐛 问题反馈
 
-        如果您遇到任何问题，请在 [GitHub Issues](https://github.com/mintya/auto-proxy/issues) 中反馈。
+        如果您遇到任何问题，请在 [GitHub Issues](https://github.com/${{ github.repository }}/issues) 中反馈。
+
+        ---
+        
+        **完整变更日志**: https://github.com/${{ github.repository }}/compare/$PREV_TAG...v${{ env.VERSION }}
         EOF
 
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         name: Auto Proxy v${{ env.VERSION }}
         body_path: release-notes.md
         files: |
-          release-assets/*.tar.gz
-          release-assets/SHA256SUMS
+          release-assets/*
         draft: false
-        prerelease: false
-        generate_release_notes: true
+        prerelease: ${{ contains(env.VERSION, 'alpha') || contains(env.VERSION, 'beta') || contains(env.VERSION, 'rc') }}
+        generate_release_notes: false  # 我们自己生成了
+        make_latest: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Upload to release
+    - name: Upload to release summary
       run: |
-        echo "🎉 Release v${{ env.VERSION }} created successfully!"
-        echo "📦 Assets uploaded:"
-        ls -la release-assets/
+        echo "🎉 Release v${{ env.VERSION }} created successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📦 Assets uploaded:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        ls -la release-assets/ >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🔗 [View Release](https://github.com/${{ github.repository }}/releases/tag/v${{ env.VERSION }})" >> $GITHUB_STEP_SUMMARY
