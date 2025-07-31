@@ -1,0 +1,30 @@
+[package]
+name = "auto-proxy"
+version = "0.1.0"
+edition = "2021"
+authors = ["Auto Proxy Team"]
+description = "智能代理服务器，支持多提供商自动重试和故障转移"
+license = "MIT"
+repository = "https://github.com/mintya/auto-proxy"
+
+[[bin]]
+name = "auto-proxy"
+path = "src/main.rs"
+
+[lib]
+name = "auto_proxy"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "0.14", features = ["full"] }
+http = "0.2"
+hyper-tls = "0.5"
+tokio-util = "0.7"
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "5.0"
+rand = "0.8"
+colored = "2.0"
