@@ -51,6 +51,17 @@ jobs:
         sudo apt-get install -y gcc-aarch64-linux-gnu
         echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
         echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+    
+    - name: Install OpenSSL dependencies
+      run: |
+        if [[ "$RUNNER_OS" == "Linux" ]]; then
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+        elif [[ "$RUNNER_OS" == "macOS" ]]; then
+          brew install openssl@3
+          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+        fi
 
     - name: Cache cargo registry
       uses: actions/cache@v3
