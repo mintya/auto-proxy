@@ -9,12 +9,13 @@
 
 ## ✨ 主要特性
 
-- 🔄 **多提供商支持**: 配置多个API提供商，自动智能选择
-- ⭐ **智能服务商选择**: 优先使用上次成功的服务商，提升响应速度
-- 🚀 **首次请求优化**: 优先服务商失败时并行尝试所有服务商，选择最快响应
-- 💾 **配置自动更新**: 自动保存优先服务商到配置文件，下次启动时保持状态
-- 🎯 **智能重试**: 请求失败时自动重试，支持故障转移
-- 🚦 **速率限制**: 可配置的每分钟请求限制，防止API过载（默认1000次/分钟/供应商）
+- 🔄 **多提供商支持**: 配置多个API提供商，自动负载均衡
+- ⚖️ **智能负载均衡**: 轮询算法结合健康度权重，自动分散负载
+- 🏥 **健康度监控**: 实时追踪供应商健康状态，失败时自动降权
+- 🚀 **快速故障转移**: 不健康供应商自动跳过，确保服务连续性
+- 🚨 **紧急恢复模式**: 所有供应商下线时自动启动恢复机制
+- 🎯 **智能重试**: 根据健康度调整重试策略，减少无效请求
+- 🚦 **速率限制**: 可配置的每分钟请求限制，防止API过载（默认5次/分钟/供应商）
 - 🔒 **隐私保护**: 日志中自动屏蔽敏感的Token信息
 - 📊 **详细日志**: 彩色日志输出，清晰显示请求状态和服务商切换信息
 - ⚡ **高性能**: 基于Rust和Tokio的异步架构，使用rustls提供TLS支持
@@ -118,15 +119,13 @@ cargo install --git https://github.com/mintya/auto-proxy.git
     "name": "provider_1",
     "token": "sk-your-token-here",
     "base_url": "https://api.example.com",
-    "key_type": "AUTH_TOKEN",
-    "preferred": true
+    "key_type": "AUTH_TOKEN"
   },
   {
     "name": "provider_2", 
     "token": "sk-another-token",
     "base_url": "https://api.another.com",
-    "key_type": "AUTH_TOKEN",
-    "preferred": false
+    "key_type": "AUTH_TOKEN"
   }
 ]
 
@@ -137,26 +136,28 @@ cargo install --git https://github.com/mintya/auto-proxy.git
 - `token`: API token，用于认证请求
 - `base_url`: API 基础 URL，用于构建完整的请求地址
 - `key_type`: 认证方式，当前支持 `AUTH_TOKEN`
-- `preferred`: 是否为优先服务商（可选，默认为 false）
 
-### 智能服务商选择机制
+### 智能负载均衡机制
 
-#### 🎯 优先服务商逻辑
-- **启动时**: 自动读取配置文件中标记为 `preferred: true` 的服务商
-- **首次请求**: 
-  1. 如果有优先服务商，先尝试它（重试3次）
-  2. 优先服务商失败后，并行尝试所有服务商
-  3. 第一个成功响应的服务商将被设为新的优先服务商
-- **后续请求**: 优先使用上次成功的服务商，失败后按顺序尝试其他服务商
-- **配置更新**: 每次优先服务商变化时，自动更新配置文件
+#### ⚖️ 负载均衡算法
+- **轮询算法**: 基础的轮询选择，确保负载均匀分布
+- **健康度权重**: 结合供应商健康状态，优先选择健康的服务商
+- **快速失败**: 不健康供应商自动跳过，避免延迟
+- **紧急恢复**: 所有供应商下线时启动恢复机制
 
-#### 📊 日志输出说明
+#### 🏥 健康度系统
+- **初始健康度**: 新供应商默认100%健康度
+- **成功响应**: 健康度逐步恢复，每次成功+5分
+- **失败响应**: 健康度降低，每次失败-10分
+- **自动恢复**: 5分钟无活动后健康度自动恢复
+- **健康阈值**: 健康度>20%视为可用，=0%为完全下线
+
+#### 📊 负载均衡策略
 ```bash
-⭐ 从配置文件读取到优先服务商: provider_1
-⭐ 首次请求 - 优先尝试配置的首选服务商: provider_1 (https://api.example.com)
-🚀 优先服务商失败，开始并行尝试所有服务商...
-🎯 并行请求成功 - 服务商: provider_2，已设为下次优先选择
-💾 已更新配置文件中的优先服务商: provider_2
+🎯 Round 1: provider_1 (健康度: 85%)
+✅ 成功: provider_1 → 90% 健康度
+🚨 紧急模式启动 - 快速检测所有供应商
+🎉 紧急恢复成功! provider_2 → 15% 健康度
 ```
 
 ### 配置文件处理逻辑
@@ -164,8 +165,8 @@ cargo install --git https://github.com/mintya/auto-proxy.git
 - ✅ 默认配置文件不存在时，自动创建目录和模板文件
 - ❌ 通过 --config 指定的文件不存在时，提示错误并退出
 - ❌ 配置文件格式错误或为空时，提示错误并退出
-- 🔄 程序会智能选择最佳服务商，而非简单轮换
-- 💾 优先服务商变化时自动更新配置文件
+- ⚖️ 采用轮询+健康度的负载均衡算法
+- 🏥 实时监控所有供应商健康状态
 
 ### 功能
 
@@ -173,8 +174,8 @@ cargo install --git https://github.com/mintya/auto-proxy.git
 - 自动替换请求中的Authorization头中的token
 - 自动替换或添加Host头
 - 支持从配置文件读取多个服务提供商的配置
-- 智能服务商选择和自动故障转移
-- 配置文件自动更新和持久化
+- 智能负载均衡和健康度监控
+- 自动故障转移和紧急恢复机制
 
 ### 🚦 速率限制功能
 
@@ -189,14 +190,14 @@ Auto Proxy 内置智能速率限制功能，保护API供应商免受过度请求
 
 #### 日志示例：
 ```bash
-🔑 使用Token: sk-w3USa**** (45/1000)    # 正常请求，显示当前/限制
-⚠️ 服务商 anyrouter 已达到速率限制 (1000/1000/分钟)    # 达到限制时的警告
-🔄 切换到下一个提供商...    # 自动切换到其他供应商
+🔑 sk-w3USa**** | 速率:3/5 | 健康度:85%      # 显示Token、速率限制和健康度
+⚠️ 速率限制: anyrouter (5/5)             # 达到速率限制的警告
+🔄 故障转移到下一个供应商...               # 自动切换提示
 ```
 
 #### 使用建议：
-- **开发环境**: 可以设置较低的限制值进行测试 (`--rate-limit 100`)
-- **生产环境**: 根据API供应商的实际限制设置合理值
+- **开发环境**: 可以设置低限制值进行测试 (`--rate-limit 3`)
+- **生产环境**: 根据API供应商的实际限制设置合理值 (`--rate-limit 10`)
 - **多供应商**: 通过配置多个供应商实现更大的总吞吐量
 
 ---
@@ -215,11 +216,11 @@ auto-proxy --port 3000
 # 指定配置文件
 auto-proxy --config /path/to/config.json
 
-# 设置自定义速率限制（每分钟500次）
-auto-proxy --rate-limit 500
+# 设置自定义速率限制（每分钟5次）
+auto-proxy --rate-limit 5
 
 # 同时指定端口、配置文件和速率限制
-auto-proxy --port 3000 --config /path/to/config.json --rate-limit 2000
+auto-proxy --port 3000 --config /path/to/config.json --rate-limit 10
 ```
 
 ### 命令行参数
@@ -231,7 +232,7 @@ USAGE:
 OPTIONS:
     -p, --port <PORT>              监听端口 [default: 8080]
     -c, --config <CONFIG>          配置文件路径 [default: ~/.claude-proxy-manager/providers.json]
-    -r, --rate-limit <RATE_LIMIT>  每个供应商每分钟最大请求数 [default: 1000]
+    -r, --rate-limit <RATE_LIMIT>  每个供应商每分钟最大请求数 [default: 5]
     -h, --help                     显示帮助信息
     -V, --version                  显示版本信息
 ```
@@ -261,29 +262,37 @@ curl -X POST http://localhost:8080/v1/chat/completions \
      2. provider_2 - https://api.another.com (Token: sk-56****78cd)
      3. provider_3 - https://api.third.com (Token: sk-90****12ef)
    
-   速率限制: 每个供应商每分钟最多 1000 次请求
-   
-   ⭐ 从配置文件读取到优先服务商: provider_2
+   ⚡ 负载均衡模式: 轮询 + 健康度权重
+   🎯 速率限制: 每个供应商每分钟最多 5 次请求
+   💚 健康度系统: 自动故障恢复和快速失败
    ```
 
-2. **首次请求处理**
+2. **负载均衡请求处理**
    ```bash
-   🔄 POST /v1/chat/completions
-   ⭐ 首次请求 - 优先尝试配置的首选服务商: provider_2 (https://api.another.com)
-   🔑 使用Token: sk-56****78cd (1/1000)
-   ❌ 优先服务商网络错误: connection timeout
-   🚀 优先服务商失败，开始并行尝试所有服务商...
-   🎯 并行请求成功 - 服务商: provider_1，已设为下次优先选择
-   💾 已更新配置文件中的优先服务商: provider_1
-   ✅ 请求成功: 200 OK
+   🔄 POST /v1/chat/completions [Load Balancing]
+   🎯 Round 1: provider_1 (健康度: 85%)
+   🔑 sk-12****34ab | 速率:3/5 | 健康度:85%
+   ✅ 成功: provider_1 → 90% 健康度
    ```
 
-3. **后续请求处理**
+3. **故障转移处理**
    ```bash
-   🔄 POST /v1/chat/completions
-   ⭐ 优先尝试上次成功的提供商: provider_1 (https://api.example.com)
-   🔑 使用Token: sk-12****34ab (45/1000)
-   ✅ 请求成功: 200 OK
+   🔄 POST /v1/chat/completions [Load Balancing]
+   🎯 Round 1: provider_2 (健康度: 25%)
+   🔑 sk-56****78cd | 速率:2/5 | 健康度:25%
+   ❌ 失败: provider_2 [502] → 15% 健康度
+   🔄 故障转移到下一个供应商...
+   🎯 Round 2: provider_3 (健康度: 95%)
+   🔑 sk-90****12ef | 速率:1/5 | 健康度:95%
+   ✅ 成功: provider_3 → 100% 健康度
+   ```
+
+4. **紧急恢复模式**
+   ```bash
+   🚨 所有供应商都已下线，启动紧急恢复...
+   🚨 紧急模式启动 - 快速检测所有供应商
+   ⚡ 紧急测试: provider_1
+   🎉 紧急恢复成功! provider_1 → 15% 健康度
    ```
 
 ## 🔒 隐私和安全

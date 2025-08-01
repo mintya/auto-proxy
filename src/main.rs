@@ -25,7 +25,7 @@ struct Args {
     config: Option<PathBuf>,
     
     /// 每个供应商每分钟最大请求数
-    #[arg(short = 'r', long, default_value_t = 1000)]
+    #[arg(short = 'r', long, default_value_t = 5)]
     rate_limit: usize,
 }
 
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     
     // 读取配置文件
-    let (providers, actual_config_path) = match read_providers_config(args.config) {
+    let (providers, _actual_config_path) = match read_providers_config(args.config) {
         Ok(result) => result,
         Err(e) => {
             eprintln!("{} {}", "❌ 配置加载失败:".red().bold(), e);
@@ -58,7 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!();
-    println!("{}", format!("速率限制: 每个供应商每分钟最多 {} 次请求", args.rate_limit).bright_magenta());
+    println!("{}", format!("⚡ 负载均衡模式: 轮询 + 健康度权重").bright_magenta());
+    println!("{}", format!("🎯 速率限制: 每个供应商每分钟最多 {} 次请求", args.rate_limit).bright_magenta());
+    println!("{}",         "💚 健康度系统: 自动故障恢复和快速失败".bright_magenta());
     println!();
     
     // 构建监听地址
@@ -69,12 +71,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // 创建代理状态管理
     let state = Arc::new(ProxyState::new_with_rate_limit(args.rate_limit));
-    
-    // 设置配置文件路径到状态中
-    state.set_config_path(Some(actual_config_path));
-    
-    // 初始化优先服务商
-    state.initialize_preferred_provider(&providers);
     
     // 创建服务
     let make_svc = make_service_fn(move |_conn| {
@@ -92,14 +88,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 启动服务器
     let server = Server::bind(&addr).serve(make_svc);
     
-    println!("{}", "HTTP服务器已启动!".green().bold());
-    println!("{}", format!("监听地址: {}", addr).cyan());
+    println!("{}", "🌐 HTTP代理服务器已启动!".green().bold());
+    println!("{}", format!("📡 监听地址: {}", addr).cyan());
     println!();
-    println!("{}", "请配置以下环境变量以使用此代理:".yellow().bold());
-    println!("{}", format!("export ANTHROPIC_BASE_URL=\"http://localhost:{}\"", args.port).bright_blue());
-    println!("{}", "export ANTHROPIC_AUTH_TOKEN=\"sk-your-token-here\"".bright_blue());
+    println!("{}", "📝 使用说明:".yellow().bold());
+    println!("{}", format!("   export ANTHROPIC_BASE_URL=\"http://localhost:{}\"", args.port).bright_blue());
+    println!("{}", "   export ANTHROPIC_AUTH_TOKEN=\"sk-your-token-here\"".bright_blue());
     println!();
-    println!("{}", "代理已准备就绪，等待请求...".green());
+    println!("{}", "🔄 负载均衡特性:".green().bold());
+    println!("{}",         "   • 智能轮询算法，自动分散负载".white());
+    println!("{}",         "   • 健康度追踪，失败供应商自动降权".white());
+    println!("{}",         "   • 快速失败机制，避免无效重试".white());
+    println!("{}",         "   • 紧急恢复模式，确保服务可用性".white());
+    println!();
+    println!("{}", "✅ 代理服务已就绪，等待请求...".green());
     
     // 等待服务器关闭
     if let Err(e) = server.await {

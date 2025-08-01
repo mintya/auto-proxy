@@ -1,7 +1,7 @@
 //! 提供商相关的数据结构和功能
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 速率限制器
@@ -102,6 +102,145 @@ impl RateLimiter {
     }
 }
 
+/// 供应商健康度追踪器
+#[derive(Debug)]
+pub struct ProviderHealth {
+    /// 健康度分数 (0-100)
+    health_score: AtomicU8,
+    /// 连续失败次数
+    consecutive_failures: AtomicU8,
+    /// 连续成功次数
+    consecutive_successes: AtomicU8,
+    /// 最后更新时间
+    last_updated: AtomicU64,
+}
+
+impl ProviderHealth {
+    pub fn new() -> Self {
+        Self {
+            health_score: AtomicU8::new(100), // 初始健康度100%
+            consecutive_failures: AtomicU8::new(0),
+            consecutive_successes: AtomicU8::new(0),
+            last_updated: AtomicU64::new(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            ),
+        }
+    }
+    
+    /// 记录成功请求
+    pub fn record_success(&self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+            
+        self.last_updated.store(now, Ordering::Relaxed);
+        let previous_failures = self.consecutive_failures.load(Ordering::Relaxed);
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        let successes = self.consecutive_successes.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        
+        // 成功时的恢复速度：之前失败越多，恢复越快
+        let current_health = self.health_score.load(Ordering::Relaxed);
+        if current_health < 100 {
+            let recovery = if previous_failures > 0 {
+                // 从失败中恢复：根据之前失败次数调整恢复速度
+                match previous_failures {
+                    1..=2 => 10,   // 轻微失败后快速恢复
+                    3..=4 => 15,   // 中度失败后中等恢复
+                    5..=10 => 25,  // 严重失败后大幅恢复
+                    _ => 35,       // 极度失败后极速恢复
+                }
+            } else {
+                // 正常连续成功：渐进恢复
+                std::cmp::min(successes * 3, 15) // 每次成功最多恢复15分
+            };
+            
+            let recovery = std::cmp::min(recovery, 100 - current_health);
+            self.health_score.store(current_health + recovery, Ordering::Relaxed);
+        }
+    }
+    
+    /// 记录失败请求
+    pub fn record_failure(&self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+            
+        self.last_updated.store(now, Ordering::Relaxed);
+        self.consecutive_successes.store(0, Ordering::Relaxed);
+        let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        
+        // 指数级健康度下降：从慢到快
+        let current_health = self.health_score.load(Ordering::Relaxed);
+        let penalty = match failures {
+            1 => 5,   // 第1次失败：轻微惩罚
+            2 => 10,  // 第2次失败：开始加重
+            3 => 20,  // 第3次失败：显著下降
+            4 => 35,  // 第4次失败：大幅下降
+            5..=10 => 50, // 第5-10次：严重惩罚
+            _ => current_health, // 超过10次：直接降到0
+        };
+        
+        let new_health = current_health.saturating_sub(penalty);
+        self.health_score.store(new_health, Ordering::Relaxed);
+    }
+    
+    /// 获取当前健康度分数
+    pub fn get_health_score(&self) -> u8 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let last_updated = self.last_updated.load(Ordering::Relaxed);
+        
+        // 如果超过5分钟没有更新，逐步恢复健康度
+        if now.saturating_sub(last_updated) > 300 { // 5分钟
+            let current_health = self.health_score.load(Ordering::Relaxed);
+            if current_health < 100 {
+                let recovery = std::cmp::min(5, 100 - current_health); // 每5分钟恢复5分
+                self.health_score.store(current_health + recovery, Ordering::Relaxed);
+                self.last_updated.store(now, Ordering::Relaxed);
+            }
+        }
+        
+        self.health_score.load(Ordering::Relaxed)
+    }
+    
+    /// 检查是否健康（健康度 > 20）
+    pub fn is_healthy(&self) -> bool {
+        self.get_health_score() > 20
+    }
+    
+    /// 检查是否完全不可用（健康度 = 0）
+    pub fn is_completely_down(&self) -> bool {
+        self.get_health_score() == 0
+    }
+    
+    /// 强制进行健康恢复尝试（紧急模式）
+    pub fn emergency_recovery(&self) {
+        let current_health = self.health_score.load(Ordering::Relaxed);
+        if current_health == 0 {
+            // 给予最小健康度以允许重试
+            self.health_score.store(10, Ordering::Relaxed);
+            self.consecutive_failures.store(0, Ordering::Relaxed);
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            self.last_updated.store(now, Ordering::Relaxed);
+        }
+    }
+    
+    /// 获取连续失败次数
+    pub fn get_consecutive_failures(&self) -> u8 {
+        self.consecutive_failures.load(Ordering::Relaxed)
+    }
+}
+
 /// 代理提供商配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Provider {
@@ -113,9 +252,6 @@ pub struct Provider {
     pub base_url: String,
     /// 密钥类型
     pub key_type: String,
-    /// 是否为优先服务商
-    #[serde(default)]
-    pub preferred: bool,
 }
 
 impl Provider {
@@ -128,13 +264,4 @@ impl Provider {
         }
     }
     
-    /// 设置为优先服务商
-    pub fn set_preferred(&mut self, preferred: bool) {
-        self.preferred = preferred;
-    }
-    
-    /// 检查是否为优先服务商
-    pub fn is_preferred(&self) -> bool {
-        self.preferred
-    }
 }
