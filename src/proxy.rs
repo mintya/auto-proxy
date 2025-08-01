@@ -10,7 +10,8 @@ use hyper_rustls::HttpsConnectorBuilder;
 use http::header::{HeaderValue, AUTHORIZATION, HOST};
 use tokio::time::sleep;
 use colored::*;
-use crate::provider::Provider;
+use crate::provider::{Provider, RateLimiter};
+use std::collections::HashMap;
 
 /// 代理状态管理
 pub struct ProxyState {
@@ -20,14 +21,24 @@ pub struct ProxyState {
     pub config_path: std::sync::Mutex<Option<PathBuf>>,
     /// 是否为首次请求
     pub is_first_request: AtomicBool,
+    /// 每个提供商的速率限制器
+    pub rate_limiters: std::sync::Mutex<HashMap<String, RateLimiter>>,
+    /// 全局速率限制值
+    pub rate_limit: usize,
 }
 
 impl ProxyState {
     pub fn new() -> Self {
+        Self::new_with_rate_limit(1000)
+    }
+    
+    pub fn new_with_rate_limit(rate_limit: usize) -> Self {
         Self {
             last_successful_provider: AtomicUsize::new(0),
             config_path: std::sync::Mutex::new(None),
             is_first_request: AtomicBool::new(true),
+            rate_limiters: std::sync::Mutex::new(HashMap::new()),
+            rate_limit,
         }
     }
     
@@ -38,7 +49,6 @@ impl ProxyState {
     
     /// 初始化优先服务商索引
     pub fn initialize_preferred_provider(&self, providers: &[Provider]) {
-        // 查找配置中标记为优先的服务商
         if let Some(index) = providers.iter().position(|p| p.is_preferred()) {
             self.last_successful_provider.store(index, Ordering::Relaxed);
             println!("{} 从配置文件读取到优先服务商: {}", 
@@ -50,21 +60,17 @@ impl ProxyState {
     
     /// 更新配置文件中的优先服务商
     pub async fn update_preferred_provider_in_config(&self, providers: &mut [Provider], new_preferred_index: usize) {
-        // 重置所有服务商的优先标记
         for provider in providers.iter_mut() {
             provider.set_preferred(false);
         }
         
-        // 设置新的优先服务商
         if new_preferred_index < providers.len() {
             providers[new_preferred_index].set_preferred(true);
             
-            // 获取配置文件路径的拷贝，避免跨异步边界持有 MutexGuard
             let config_path = {
                 self.config_path.lock().unwrap().clone()
             };
             
-            // 保存到配置文件
             if let Some(config_path) = config_path {
                 match self.save_config_file(&config_path, providers).await {
                     Ok(_) => {
@@ -87,18 +93,38 @@ impl ProxyState {
         tokio::fs::write(config_path, json_content).await?;
         Ok(())
     }
+    
+    /// 检查提供商是否可以发起请求（速率限制）
+    pub fn can_request(&self, provider_name: &str) -> bool {
+        let mut limiters = self.rate_limiters.lock().unwrap();
+        let limiter = limiters.entry(provider_name.to_string())
+            .or_insert_with(|| RateLimiter::new(self.rate_limit));
+        limiter.can_request()
+    }
+    
+    /// 记录一次请求到指定提供商
+    pub fn record_request(&self, provider_name: &str) {
+        let mut limiters = self.rate_limiters.lock().unwrap();
+        let limiter = limiters.entry(provider_name.to_string())
+            .or_insert_with(|| RateLimiter::new(self.rate_limit));
+        limiter.record_request();
+    }
+    
+    /// 获取提供商当前请求数量
+    pub fn get_current_requests(&self, provider_name: &str) -> usize {
+        let mut limiters = self.rate_limiters.lock().unwrap();
+        let limiter = limiters.entry(provider_name.to_string())
+            .or_insert_with(|| RateLimiter::new(self.rate_limit));
+        limiter.current_requests()
+    }
+    
+    /// 获取速率限制值
+    pub fn get_rate_limit(&self) -> usize {
+        self.rate_limit
+    }
 }
 
 /// 处理代理请求
-/// 
-/// # 参数
-/// * `req` - 原始HTTP请求
-/// * `providers` - 提供商列表
-/// * `state` - 代理状态管理
-/// 
-/// # 返回
-/// * `Ok(Response<Body>)` - 成功的响应
-/// * `Err(Infallible)` - 不可能的错误（用于满足hyper的类型要求）
 pub async fn handle_request(req: Request<Body>, providers: Arc<Vec<Provider>>, state: Arc<ProxyState>) -> Result<Response<Body>, Infallible> {
     let method = req.method().clone();
     let uri = req.uri().clone();
@@ -106,7 +132,6 @@ pub async fn handle_request(req: Request<Body>, providers: Arc<Vec<Provider>>, s
     
     println!("{} {} {}", "🔄".cyan(), method.to_string().bright_blue(), uri.to_string().bright_white());
     
-    // 获取请求体
     let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -121,10 +146,8 @@ pub async fn handle_request(req: Request<Body>, providers: Arc<Vec<Provider>>, s
     let is_first_request = state.is_first_request.swap(false, Ordering::Relaxed);
     
     if is_first_request {
-        // 首次请求：先尝试优先服务商，失败后并行尝试所有服务商
         handle_first_request(&providers, &state, &method, &uri, &headers, &body_bytes).await
     } else {
-        // 后续请求：优先尝试上次成功的服务商
         handle_subsequent_request(&providers, &state, &method, &uri, &headers, &body_bytes).await
     }
 }
@@ -156,7 +179,7 @@ async fn handle_first_request(
                 sleep(Duration::from_millis(500)).await;
             }
             
-            match try_provider(provider, method, uri, headers, body_bytes).await {
+            match try_provider(provider, method, uri, headers, body_bytes, state).await {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
@@ -195,9 +218,10 @@ async fn handle_first_request(
         let uri = uri.clone();
         let headers = headers.clone();
         let body_bytes = body_bytes.clone();
+        let state_clone = state.clone();
         
         let task = tokio::spawn(async move {
-            match try_provider(&provider, &method, &uri, &headers, &body_bytes).await {
+            match try_provider(&provider, &method, &uri, &headers, &body_bytes, &state_clone).await {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
@@ -285,7 +309,7 @@ async fn handle_subsequent_request(
                 sleep(Duration::from_millis(500)).await;
             }
             
-            match try_provider(&provider, &method, &uri, &headers, &body_bytes).await {
+            match try_provider(&provider, &method, &uri, &headers, &body_bytes, state).await {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
@@ -337,58 +361,88 @@ async fn handle_subsequent_request(
         .unwrap())
 }
 
-/// 尝试使用指定提供商发送请求
 async fn try_provider(
     provider: &Provider,
     method: &hyper::Method,
     uri: &hyper::Uri,
     headers: &hyper::HeaderMap,
     body_bytes: &hyper::body::Bytes,
+    state: &Arc<ProxyState>,
 ) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>> {
+    // 检查速率限制
+    if !state.can_request(&provider.name) {
+        let current_requests = state.get_current_requests(&provider.name);
+        let rate_limit = state.get_rate_limit();
+        println!("{} 服务商 {} 已达到速率限制 ({}/{}/分钟)", 
+            "⚠️".yellow(), 
+            provider.name.bright_yellow(),
+            current_requests.to_string().bright_red(),
+            rate_limit.to_string().bright_white()
+        );
+        return Err("Rate limit exceeded".into());
+    }
+    
+    // 记录请求
+    state.record_request(&provider.name);
+    
     let https = HttpsConnectorBuilder::new()
         .with_native_roots()
         .https_or_http()
         .enable_http1()
-        .enable_http2()
         .build();
     let client = Client::builder().build::<_, hyper::Body>(https);
     
-    // 构建新的URI
     let target_uri = format!("{}{}", provider.base_url, uri.path_and_query().map(|x| x.as_str()).unwrap_or("/"));
     let target_uri: hyper::Uri = target_uri.parse()?;
     
-    // 创建新请求
     let mut new_req = Request::builder()
         .method(method)
         .uri(&target_uri);
     
-    // 复制原始请求头，但跳过某些头
+    // 复制原始请求头，只跳过需要重新设置的关键头部
     for (name, value) in headers {
-        if name != "host" && name != "authorization" {
-            new_req = new_req.header(name, value);
+        let name_lower = name.as_str().to_lowercase();
+        if name_lower == "host" || name_lower == "authorization" {
+            continue;
         }
+        new_req = new_req.header(name, value);
     }
     
-    // 设置新的Authorization头
+    // 设置新的Authorization和Host头
     let masked_token = provider.masked_token();
-    println!("{} 使用Token: {}", "🔑".cyan(), masked_token.bright_yellow());
+    let current_requests = state.get_current_requests(&provider.name);
+    let rate_limit = state.get_rate_limit();
+    println!("{} 使用Token: {} ({}/{})", 
+        "🔑".cyan(), 
+        masked_token.bright_yellow(),
+        current_requests.to_string().bright_cyan(),
+        rate_limit.to_string().bright_white()
+    );
     
     new_req = new_req.header(AUTHORIZATION, format!("Bearer {}", provider.token));
     
-    // 设置新的Host头
     if let Some(host) = target_uri.host() {
         let target_host = if let Some(port) = target_uri.port_u16() {
             format!("{}:{}", host, port)
         } else {
             host.to_string()
         };
-        let target_host_str = target_host.as_str();
-        new_req = new_req.header(HOST, HeaderValue::from_str(target_host_str)?);
+        new_req = new_req.header(HOST, HeaderValue::from_str(&target_host)?);
     }
     
     let new_req = new_req.body(Body::from(body_bytes.clone()))?;
     
-    // 发送请求
     let response = client.request(new_req).await?;
+    
+    // 对于错误响应，记录错误信息但不打印详细内容
+    if !response.status().is_success() {
+        let status = response.status();
+        println!("{} 请求失败: {} - {}", 
+            "❌".red(), 
+            status.as_u16().to_string().bright_red(),
+            provider.name.bright_white()
+        );
+    }
+    
     Ok(response)
 }

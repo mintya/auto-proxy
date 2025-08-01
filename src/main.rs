@@ -23,6 +23,10 @@ struct Args {
     /// 配置文件路径
     #[arg(short, long)]
     config: Option<PathBuf>,
+    
+    /// 每个供应商每分钟最大请求数
+    #[arg(short = 'r', long, default_value_t = 1000)]
+    rate_limit: usize,
 }
 
 #[tokio::main]
@@ -54,6 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!();
+    println!("{}", format!("速率限制: 每个供应商每分钟最多 {} 次请求", args.rate_limit).bright_magenta());
+    println!();
     
     // 构建监听地址
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
@@ -62,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let providers = Arc::new(providers);
     
     // 创建代理状态管理
-    let state = Arc::new(ProxyState::new());
+    let state = Arc::new(ProxyState::new_with_rate_limit(args.rate_limit));
     
     // 设置配置文件路径到状态中
     state.set_config_path(Some(actual_config_path));

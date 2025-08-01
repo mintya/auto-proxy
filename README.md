@@ -14,6 +14,7 @@
 - 🚀 **首次请求优化**: 优先服务商失败时并行尝试所有服务商，选择最快响应
 - 💾 **配置自动更新**: 自动保存优先服务商到配置文件，下次启动时保持状态
 - 🎯 **智能重试**: 请求失败时自动重试，支持故障转移
+- 🚦 **速率限制**: 可配置的每分钟请求限制，防止API过载（默认1000次/分钟/供应商）
 - 🔒 **隐私保护**: 日志中自动屏蔽敏感的Token信息
 - 📊 **详细日志**: 彩色日志输出，清晰显示请求状态和服务商切换信息
 - ⚡ **高性能**: 基于Rust和Tokio的异步架构，使用rustls提供TLS支持
@@ -175,6 +176,31 @@ cargo install --git https://github.com/mintya/auto-proxy.git
 - 智能服务商选择和自动故障转移
 - 配置文件自动更新和持久化
 
+### 🚦 速率限制功能
+
+Auto Proxy 内置智能速率限制功能，保护API供应商免受过度请求：
+
+#### 特性：
+- **可配置限制**: 通过 `--rate-limit` 参数设置每个供应商每分钟的最大请求数
+- **独立计数**: 每个供应商都有独立的速率限制计数器
+- **滑动窗口**: 使用精确的滑动窗口算法，确保限制的准确性
+- **智能跳过**: 达到限制时自动跳过该供应商，尝试其他可用供应商
+- **实时监控**: 日志中显示当前请求数量和限制值
+
+#### 日志示例：
+```bash
+🔑 使用Token: sk-w3USa**** (45/1000)    # 正常请求，显示当前/限制
+⚠️ 服务商 anyrouter 已达到速率限制 (1000/1000/分钟)    # 达到限制时的警告
+🔄 切换到下一个提供商...    # 自动切换到其他供应商
+```
+
+#### 使用建议：
+- **开发环境**: 可以设置较低的限制值进行测试 (`--rate-limit 100`)
+- **生产环境**: 根据API供应商的实际限制设置合理值
+- **多供应商**: 通过配置多个供应商实现更大的总吞吐量
+
+---
+
 ## 🚀 使用方法
 
 ### 基本用法
@@ -189,8 +215,11 @@ auto-proxy --port 3000
 # 指定配置文件
 auto-proxy --config /path/to/config.json
 
-# 同时指定端口和配置文件
-auto-proxy --port 3000 --config /path/to/config.json
+# 设置自定义速率限制（每分钟500次）
+auto-proxy --rate-limit 500
+
+# 同时指定端口、配置文件和速率限制
+auto-proxy --port 3000 --config /path/to/config.json --rate-limit 2000
 ```
 
 ### 命令行参数
@@ -200,10 +229,11 @@ USAGE:
     auto-proxy [OPTIONS]
 
 OPTIONS:
-    -p, --port <PORT>        监听端口 [default: 8080]
-    -c, --config <CONFIG>    配置文件路径 [default: ~/.claude-proxy-manager/providers.json]
-    -h, --help              显示帮助信息
-    -V, --version           显示版本信息
+    -p, --port <PORT>              监听端口 [default: 8080]
+    -c, --config <CONFIG>          配置文件路径 [default: ~/.claude-proxy-manager/providers.json]
+    -r, --rate-limit <RATE_LIMIT>  每个供应商每分钟最大请求数 [default: 1000]
+    -h, --help                     显示帮助信息
+    -V, --version                  显示版本信息
 ```
 
 ### 使用示例
@@ -230,6 +260,9 @@ curl -X POST http://localhost:8080/v1/chat/completions \
      1. provider_1 - https://api.example.com (Token: sk-12****34ab)
      2. provider_2 - https://api.another.com (Token: sk-56****78cd)
      3. provider_3 - https://api.third.com (Token: sk-90****12ef)
+   
+   速率限制: 每个供应商每分钟最多 1000 次请求
+   
    ⭐ 从配置文件读取到优先服务商: provider_2
    ```
 
@@ -237,7 +270,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
    ```bash
    🔄 POST /v1/chat/completions
    ⭐ 首次请求 - 优先尝试配置的首选服务商: provider_2 (https://api.another.com)
-   🔑 使用Token: sk-56****78cd
+   🔑 使用Token: sk-56****78cd (1/1000)
    ❌ 优先服务商网络错误: connection timeout
    🚀 优先服务商失败，开始并行尝试所有服务商...
    🎯 并行请求成功 - 服务商: provider_1，已设为下次优先选择
@@ -249,7 +282,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
    ```bash
    🔄 POST /v1/chat/completions
    ⭐ 优先尝试上次成功的提供商: provider_1 (https://api.example.com)
-   🔑 使用Token: sk-12****34ab
+   🔑 使用Token: sk-12****34ab (45/1000)
    ✅ 请求成功: 200 OK
    ```
 
