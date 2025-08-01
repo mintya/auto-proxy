@@ -13,6 +13,9 @@ pub struct Provider {
     pub base_url: String,
     /// 密钥类型
     pub key_type: String,
+    /// 是否为优先服务商
+    #[serde(default)]
+    pub preferred: bool,
 }
 
 impl Provider {
@@ -23,5 +26,15 @@ impl Provider {
         } else {
             "****".to_string()
         }
+    }
+    
+    /// 设置为优先服务商
+    pub fn set_preferred(&mut self, preferred: bool) {
+        self.preferred = preferred;
+    }
+    
+    /// 检查是否为优先服务商
+    pub fn is_preferred(&self) -> bool {
+        self.preferred
     }
 }

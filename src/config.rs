@@ -12,9 +12,9 @@ use crate::provider::Provider;
 /// * `config_path` - 可选的配置文件路径，如果为None则使用默认路径
 /// 
 /// # 返回
-/// * `Ok(Vec<Provider>)` - 成功读取的提供商列表
+/// * `Ok((Vec<Provider>, PathBuf))` - 成功读取的提供商列表和实际使用的配置文件路径
 /// * `Err(String)` - 错误信息
-pub fn read_providers_config(config_path: Option<PathBuf>) -> Result<Vec<Provider>, String> {
+pub fn read_providers_config(config_path: Option<PathBuf>) -> Result<(Vec<Provider>, PathBuf), String> {
     // 确定配置文件路径
     let (config_file, is_custom_path) = match config_path {
         Some(path) => (path, true),
@@ -62,7 +62,7 @@ pub fn read_providers_config(config_path: Option<PathBuf>) -> Result<Vec<Provide
     
     println!("{} {} 个提供商", "✅ 成功加载".green(), providers.len().to_string().bright_white());
     
-    Ok(providers)
+    Ok((providers, config_file))
 }
 
 /// 创建默认配置文件

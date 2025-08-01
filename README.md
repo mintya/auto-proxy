@@ -1,6 +1,6 @@
 # 🚀 Auto Proxy
 
-一个支持多提供商的智能代理服务器，具有自动重试和故障转移功能。
+一个支持多提供商的智能代理服务器，具有自动重试、故障转移和智能服务商选择功能。
 
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -9,10 +9,13 @@
 
 ## ✨ 主要特性
 
-- 🔄 **多提供商支持**: 配置多个API提供商，自动轮换使用
+- 🔄 **多提供商支持**: 配置多个API提供商，自动智能选择
+- ⭐ **智能服务商选择**: 优先使用上次成功的服务商，提升响应速度
+- 🚀 **首次请求优化**: 优先服务商失败时并行尝试所有服务商，选择最快响应
+- 💾 **配置自动更新**: 自动保存优先服务商到配置文件，下次启动时保持状态
 - 🎯 **智能重试**: 请求失败时自动重试，支持故障转移
 - 🔒 **隐私保护**: 日志中自动屏蔽敏感的Token信息
-- 📊 **详细日志**: 彩色日志输出，清晰显示请求状态
+- 📊 **详细日志**: 彩色日志输出，清晰显示请求状态和服务商切换信息
 - ⚡ **高性能**: 基于Rust和Tokio的异步架构，使用rustls提供TLS支持
 - 🎨 **美观界面**: 彩色终端输出，提升用户体验
 - 🔧 **易于配置**: 简单的JSON配置文件
@@ -114,13 +117,15 @@ cargo install --git https://github.com/mintya/auto-proxy.git
     "name": "provider_1",
     "token": "sk-your-token-here",
     "base_url": "https://api.example.com",
-    "key_type": "AUTH_TOKEN"
+    "key_type": "AUTH_TOKEN",
+    "preferred": true
   },
   {
     "name": "provider_2", 
     "token": "sk-another-token",
     "base_url": "https://api.another.com",
-    "key_type": "AUTH_TOKEN"
+    "key_type": "AUTH_TOKEN",
+    "preferred": false
   }
 ]
 
@@ -131,13 +136,35 @@ cargo install --git https://github.com/mintya/auto-proxy.git
 - `token`: API token，用于认证请求
 - `base_url`: API 基础 URL，用于构建完整的请求地址
 - `key_type`: 认证方式，当前支持 `AUTH_TOKEN`
+- `preferred`: 是否为优先服务商（可选，默认为 false）
+
+### 智能服务商选择机制
+
+#### 🎯 优先服务商逻辑
+- **启动时**: 自动读取配置文件中标记为 `preferred: true` 的服务商
+- **首次请求**: 
+  1. 如果有优先服务商，先尝试它（重试3次）
+  2. 优先服务商失败后，并行尝试所有服务商
+  3. 第一个成功响应的服务商将被设为新的优先服务商
+- **后续请求**: 优先使用上次成功的服务商，失败后按顺序尝试其他服务商
+- **配置更新**: 每次优先服务商变化时，自动更新配置文件
+
+#### 📊 日志输出说明
+```bash
+⭐ 从配置文件读取到优先服务商: provider_1
+⭐ 首次请求 - 优先尝试配置的首选服务商: provider_1 (https://api.example.com)
+🚀 优先服务商失败，开始并行尝试所有服务商...
+🎯 并行请求成功 - 服务商: provider_2，已设为下次优先选择
+💾 已更新配置文件中的优先服务商: provider_2
+```
 
 ### 配置文件处理逻辑
 
 - ✅ 默认配置文件不存在时，自动创建目录和模板文件
 - ❌ 通过 --config 指定的文件不存在时，提示错误并退出
 - ❌ 配置文件格式错误或为空时，提示错误并退出
-- 🔄 程序会轮换使用配置文件中的所有提供商
+- 🔄 程序会智能选择最佳服务商，而非简单轮换
+- 💾 优先服务商变化时自动更新配置文件
 
 ### 功能
 
@@ -145,6 +172,8 @@ cargo install --git https://github.com/mintya/auto-proxy.git
 - 自动替换请求中的Authorization头中的token
 - 自动替换或添加Host头
 - 支持从配置文件读取多个服务提供商的配置
+- 智能服务商选择和自动故障转移
+- 配置文件自动更新和持久化
 
 ## 🚀 使用方法
 
@@ -189,6 +218,40 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer your-token" \
   -d '{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
+
+### 🌟 智能代理工作流程
+
+1. **启动阶段**
+   ```bash
+   🚀 Auto Proxy 启动中...
+   📁 读取配置文件: ~/.claude-proxy-manager/providers.json
+   ✅ 成功加载 3 个提供商
+   📋 已加载的提供商:
+     1. provider_1 - https://api.example.com (Token: sk-12****34ab)
+     2. provider_2 - https://api.another.com (Token: sk-56****78cd)
+     3. provider_3 - https://api.third.com (Token: sk-90****12ef)
+   ⭐ 从配置文件读取到优先服务商: provider_2
+   ```
+
+2. **首次请求处理**
+   ```bash
+   🔄 POST /v1/chat/completions
+   ⭐ 首次请求 - 优先尝试配置的首选服务商: provider_2 (https://api.another.com)
+   🔑 使用Token: sk-56****78cd
+   ❌ 优先服务商网络错误: connection timeout
+   🚀 优先服务商失败，开始并行尝试所有服务商...
+   🎯 并行请求成功 - 服务商: provider_1，已设为下次优先选择
+   💾 已更新配置文件中的优先服务商: provider_1
+   ✅ 请求成功: 200 OK
+   ```
+
+3. **后续请求处理**
+   ```bash
+   🔄 POST /v1/chat/completions
+   ⭐ 优先尝试上次成功的提供商: provider_1 (https://api.example.com)
+   🔑 使用Token: sk-12****34ab
+   ✅ 请求成功: 200 OK
+   ```
 
 ## 🔒 隐私和安全
 

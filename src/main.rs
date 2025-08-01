@@ -10,7 +10,7 @@ use std::convert::Infallible;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::Server;
 use colored::*;
-use auto_proxy::{read_providers_config, handle_request};
+use auto_proxy::{read_providers_config, handle_request, ProxyState};
 
 /// 命令行参数
 #[derive(Parser, Debug)]
@@ -34,8 +34,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     
     // 读取配置文件
-    let providers = match read_providers_config(args.config) {
-        Ok(providers) => providers,
+    let (providers, actual_config_path) = match read_providers_config(args.config) {
+        Ok(result) => result,
         Err(e) => {
             eprintln!("{} {}", "❌ 配置加载失败:".red().bold(), e);
             std::process::exit(1);
@@ -61,13 +61,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 将providers包装在Arc中以便在多个请求间共享
     let providers = Arc::new(providers);
     
+    // 创建代理状态管理
+    let state = Arc::new(ProxyState::new());
+    
+    // 设置配置文件路径到状态中
+    state.set_config_path(Some(actual_config_path));
+    
+    // 初始化优先服务商
+    state.initialize_preferred_provider(&providers);
+    
     // 创建服务
     let make_svc = make_service_fn(move |_conn| {
         let providers = providers.clone();
+        let state = state.clone();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let providers = providers.clone();
-                async move { handle_request(req, providers).await }
+                let state = state.clone();
+                async move { handle_request(req, providers, state).await }
             }))
         }
     });
