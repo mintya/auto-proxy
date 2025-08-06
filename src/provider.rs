@@ -34,7 +34,7 @@ impl RateLimiter {
     pub fn can_request(&self) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(std::time::Duration::from_secs(0))
             .as_secs();
         
         let current_count = self.count.load(Ordering::Relaxed);
@@ -56,7 +56,7 @@ impl RateLimiter {
     pub fn record_request(&self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(std::time::Duration::from_secs(0))
             .as_secs();
         
         let current_count = self.count.load(Ordering::Relaxed);
@@ -77,7 +77,7 @@ impl RateLimiter {
     pub fn current_requests(&self) -> usize {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(std::time::Duration::from_secs(0))
             .as_secs();
         
         let current_count = self.count.load(Ordering::Relaxed);
@@ -134,7 +134,7 @@ impl ProviderHealth {
     pub fn record_success(&self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(std::time::Duration::from_secs(0))
             .as_secs();
             
         self.last_updated.store(now, Ordering::Relaxed);
@@ -167,7 +167,7 @@ impl ProviderHealth {
     pub fn record_failure(&self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(std::time::Duration::from_secs(0))
             .as_secs();
             
         self.last_updated.store(now, Ordering::Relaxed);
@@ -193,7 +193,7 @@ impl ProviderHealth {
     pub fn get_health_score(&self) -> u8 {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(std::time::Duration::from_secs(0))
             .as_secs();
         let last_updated = self.last_updated.load(Ordering::Relaxed);
         

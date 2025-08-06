@@ -68,14 +68,30 @@ jobs:
       run: |
         cargo install cross --git https://github.com/cross-rs/cross
 
+    - name: Update Cargo.toml version
+      run: |
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "🏷️  Updating Cargo.toml version to $VERSION"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            sed -i '' "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+          else
+            sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+          fi
+          echo "✅ Version updated in Cargo.toml"
+        else
+          echo "ℹ️  Not a tag build, keeping original version"
+        fi
+      shell: bash
+
     - name: Build binary
       run: |
         echo "🔨 Building for ${{ matrix.platform }}-${{ matrix.arch }}..."
     
         if [ "${{ matrix.use_cross }}" = "true" ]; then
-          cross build --release --target ${{ matrix.target }} --locked
+          cross build --release --target ${{ matrix.target }}
         else
-          cargo build --release --target ${{ matrix.target }} --locked
+          cargo build --release --target ${{ matrix.target }}
         fi
     
         echo "✅ Build completed successfully"
@@ -250,11 +266,33 @@ jobs:
 
         ## ✨ 主要特性
 
-        - 🔄 多提供商支持，自动重试和故障转移
-        - 🎯 智能负载均衡
-        - 🔒 Token 隐私保护
-        - 📊 详细的日志输出
-        - 🎨 美观的彩色界面
+        - 🔄 **多提供商支持**: 配置多个API提供商，自动负载均衡
+        - ⚖️ **智能负载均衡**: 轮询算法结合健康度权重，自动分散负载
+        - 🏥 **健康度监控**: 实时追踪供应商健康状态，失败时自动降权
+        - 🚀 **快速故障转移**: 不健康供应商自动跳过，确保服务连续性
+        - 🚨 **紧急恢复模式**: 所有供应商下线时自动启动恢复机制
+        - 🎯 **智能重试**: 根据健康度调整重试策略，减少无效请求
+        - 🚦 **速率限制**: 可配置的每分钟请求限制，防止API过载
+        - 🎮 **交互式界面**: 美观的实时终端UI界面，显示服务商状态和日志
+        - 🖱️ **鼠标控制**: 支持鼠标点击操作，可随时启用/禁用服务商
+        - 📊 **实时监控**: 显示健康度、速率限制、Token使用情况等实时数据
+        - 🌐 **网络状态**: 实时网络连通性检测和状态显示
+        - 🔒 **隐私保护**: 日志中自动屏蔽敏感的Token信息
+        - 📈 **Token统计**: 实时统计各服务商的Token使用量和占比
+        - ⚡ **高性能**: 基于Rust和Tokio的异步架构，使用rustls提供TLS支持
+        - 🎨 **美观界面**: 彩色终端输出，提升用户体验
+        - 🔧 **易于配置**: 简单的JSON配置文件
+        - 🌍 **跨平台**: 支持 macOS、Linux 和 Windows
+
+        ## 🎮 交互式界面
+
+        本版本包含全新的交互式终端界面：
+        - 📊 实时状态面板显示所有服务商状态
+        - 🖱️ 鼠标点击操作，可随时启用/禁用服务商
+        - ⌨️ 键盘快捷键支持 (Q/Esc退出，Ctrl+C强制退出)
+        - 📋 彩色实时日志显示
+        - 🌐 网络状态监控
+        - 📈 Token使用统计
 
         ## 📦 下载
 
@@ -284,6 +322,13 @@ jobs:
         ### Windows
         下载 zip 文件并解压，然后运行 \`auto-proxy.exe --help\`
 
+        ## 🚀 快速开始
+
+        1. **启动程序**: \`./auto-proxy\` (使用交互式界面)
+        2. **配置文件**: 首次运行会自动创建配置模板
+        3. **编辑配置**: 在 \`~/.claude-proxy-manager/providers.json\` 中添加您的API提供商
+        4. **重新启动**: 保存配置后重启程序即可使用
+
         ## 📋 校验和
 
         请使用 \`SHA256SUMS\` 文件验证下载文件的完整性：
@@ -295,6 +340,10 @@ jobs:
         ## 🐛 问题反馈
 
         如果您遇到任何问题，请在 [GitHub Issues](https://github.com/${{ github.repository }}/issues) 中反馈。
+
+        ---
+        
+        感谢使用 Auto Proxy！如果此项目对您有帮助，请考虑给个 ⭐️！
         EOF
 
     - name: Create Release

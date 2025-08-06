@@ -42,7 +42,7 @@ pub fn read_providers_config(config_path: Option<PathBuf>) -> Result<(Vec<Provid
             
             println!("{} {}", "✅ 已创建初始配置文件:".green(), config_file.display().to_string().bright_white());
             println!("{}", "📝 请修改配置文件后重新启动程序".yellow().bold());
-            std::process::exit(0);
+            return Err("需要配置API提供商信息后重新启动".to_string());
         }
     }
     
